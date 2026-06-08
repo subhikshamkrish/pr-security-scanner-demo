@@ -13,7 +13,7 @@ permissions:
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   REPORT_BUCKET: ${{ vars.SCANNER_REPORT_BUCKET }}
-  STATE_MACHINE_NAME: ${{ vars.SCANNER_STATE_MACHINE_NAME }}
+  TRIGGER_LAMBDA_NAME: ${{ vars.SCANNER_TRIGGER_LAMBDA_NAME }}
 
 jobs:
   start-security-scan:
@@ -138,21 +138,15 @@ jobs:
           BASE_REPORT_EXISTS: ${{ steps.cache.outputs.base_report_exists }}
           PR_REPORT_EXISTS: ${{ steps.cache.outputs.pr_report_exists }}
 
-      - name: Start Step Functions workflow
+      - name: Invoke trigger Lambda
         shell: bash
         run: |
           set -euo pipefail
 
-          state_machine_arn="$(aws stepfunctions list-state-machines \
-            --query "stateMachines[?name=='${STATE_MACHINE_NAME}'].stateMachineArn | [0]" \
-            --output text)"
+          aws lambda invoke \
+            --function-name "${TRIGGER_LAMBDA_NAME}" \
+            --cli-binary-format raw-in-base64-out \
+            --payload file://scanner-input.json \
+            trigger-response.json
 
-          if [ -z "${state_machine_arn}" ] || [ "${state_machine_arn}" = "None" ]; then
-            echo "State machine not found: ${STATE_MACHINE_NAME}" >&2
-            exit 1
-          fi
-
-          aws stepfunctions start-execution \
-            --state-machine-arn "${state_machine_arn}" \
-            --name "pr-${{ github.event.pull_request.number }}-${{ steps.keys.outputs.execution_id }}" \
-            --input file://scanner-input.json
+          cat trigger-response.json
