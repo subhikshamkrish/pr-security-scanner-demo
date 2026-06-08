@@ -1,0 +1,14 @@
+{
+  "name": "vulnerable-demo-app",
+  "version": "1.0.0",
+  "description": "Mock vulnerable app for PR security scanner demo",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --check src/server.js && node --check src/routes/users.js && node --check src/routes/admin.js && node --check src/utils/security.js"
+  },
+  "dependencies": {
+    "express": "^4.18.3",
+    "sqlite3": "^5.1.7"
+  }
+}

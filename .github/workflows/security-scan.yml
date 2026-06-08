@@ -1,0 +1,135 @@
+name: Differential PR Security Scan
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  REPORT_BUCKET: ${{ vars.SCANNER_REPORT_BUCKET }}
+  STATE_MACHINE_ARN: ${{ vars.SCANNER_STATE_MACHINE_ARN }}
+
+jobs:
+  start-security-scan:
+    name: Start scanner workflow
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out PR code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Compute scanner keys
+        id: keys
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          repo_safe="$(echo "${GITHUB_REPOSITORY}" | tr '/[:upper:]' '-[:lower:]')"
+          execution_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          pr_sha="${{ github.event.pull_request.head.sha }}"
+
+          echo "repo_safe=${repo_safe}" >> "${GITHUB_OUTPUT}"
+          echo "execution_id=${execution_id}" >> "${GITHUB_OUTPUT}"
+          echo "base_sha=${base_sha}" >> "${GITHUB_OUTPUT}"
+          echo "pr_sha=${pr_sha}" >> "${GITHUB_OUTPUT}"
+          echo "base_report_key=reports/base/${repo_safe}/${base_sha}.json" >> "${GITHUB_OUTPUT}"
+          echo "pr_report_key=reports/pr/${repo_safe}/${pr_sha}.json" >> "${GITHUB_OUTPUT}"
+          echo "base_zip_key=inputs/${execution_id}/base.zip" >> "${GITHUB_OUTPUT}"
+          echo "pr_zip_key=inputs/${execution_id}/pr.zip" >> "${GITHUB_OUTPUT}"
+
+      - name: Check base scan cache
+        id: cache
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if aws s3api head-object \
+            --bucket "${REPORT_BUCKET}" \
+            --key "${{ steps.keys.outputs.base_report_key }}" >/dev/null 2>&1; then
+            echo "base_report_exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "base_report_exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Package base code when cache is missing
+        if: steps.cache.outputs.base_report_exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=zip --output=/tmp/base.zip "${{ steps.keys.outputs.base_sha }}"
+          aws s3 cp /tmp/base.zip "s3://${REPORT_BUCKET}/${{ steps.keys.outputs.base_zip_key }}"
+
+      - name: Package PR code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=zip --output=/tmp/pr.zip "${{ steps.keys.outputs.pr_sha }}"
+          aws s3 cp /tmp/pr.zip "s3://${REPORT_BUCKET}/${{ steps.keys.outputs.pr_zip_key }}"
+
+      - name: Build Step Functions input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          payload = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "pull_request_number": int(os.environ["PR_NUMBER"]),
+              "execution_id": os.environ["EXECUTION_ID"],
+              "bucket": os.environ["REPORT_BUCKET"],
+              "base": {
+                  "sha": os.environ["BASE_SHA"],
+                  "report_key": os.environ["BASE_REPORT_KEY"],
+                  "zip_key": os.environ["BASE_ZIP_KEY"],
+                  "report_exists": os.environ["BASE_REPORT_EXISTS"] == "true",
+              },
+              "pr": {
+                  "sha": os.environ["PR_SHA"],
+                  "report_key": os.environ["PR_REPORT_KEY"],
+                  "zip_key": os.environ["PR_ZIP_KEY"],
+              },
+          }
+
+          with open("scanner-input.json", "w", encoding="utf-8") as output:
+              json.dump(payload, output)
+          PY
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXECUTION_ID: ${{ steps.keys.outputs.execution_id }}
+          BASE_SHA: ${{ steps.keys.outputs.base_sha }}
+          PR_SHA: ${{ steps.keys.outputs.pr_sha }}
+          BASE_REPORT_KEY: ${{ steps.keys.outputs.base_report_key }}
+          PR_REPORT_KEY: ${{ steps.keys.outputs.pr_report_key }}
+          BASE_ZIP_KEY: ${{ steps.keys.outputs.base_zip_key }}
+          PR_ZIP_KEY: ${{ steps.keys.outputs.pr_zip_key }}
+          BASE_REPORT_EXISTS: ${{ steps.cache.outputs.base_report_exists }}
+
+      - name: Start Step Functions workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws stepfunctions start-execution \
+            --state-machine-arn "${STATE_MACHINE_ARN}" \
+            --name "pr-${{ github.event.pull_request.number }}-${{ steps.keys.outputs.execution_id }}" \
+            --input file://scanner-input.json
