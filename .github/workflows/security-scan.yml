@@ -13,7 +13,7 @@ permissions:
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   REPORT_BUCKET: ${{ vars.SCANNER_REPORT_BUCKET }}
-  STATE_MACHINE_ARN: ${{ vars.SCANNER_STATE_MACHINE_ARN }}
+  STATE_MACHINE_NAME: ${{ vars.SCANNER_STATE_MACHINE_NAME }}
 
 jobs:
   start-security-scan:
@@ -129,7 +129,16 @@ jobs:
         run: |
           set -euo pipefail
 
+          state_machine_arn="$(aws stepfunctions list-state-machines \
+            --query "stateMachines[?name=='${STATE_MACHINE_NAME}'].stateMachineArn | [0]" \
+            --output text)"
+
+          if [ -z "${state_machine_arn}" ] || [ "${state_machine_arn}" = "None" ]; then
+            echo "State machine not found: ${STATE_MACHINE_NAME}" >&2
+            exit 1
+          fi
+
           aws stepfunctions start-execution \
-            --state-machine-arn "${STATE_MACHINE_ARN}" \
+            --state-machine-arn "${state_machine_arn}" \
             --name "pr-${{ github.event.pull_request.number }}-${{ steps.keys.outputs.execution_id }}" \
             --input file://scanner-input.json
