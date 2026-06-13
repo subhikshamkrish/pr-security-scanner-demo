@@ -34,3 +34,5 @@ Create these repository variables:
 - `SCANNER_TRIGGER_LAMBDA_NAME`
 
 AWS Learner Lab credentials expire, so update the three AWS secrets whenever a new lab session starts.
+
+test1
