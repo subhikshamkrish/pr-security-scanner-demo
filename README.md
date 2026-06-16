@@ -37,3 +37,4 @@ AWS Learner Lab credentials expire, so update the three AWS secrets whenever a n
 
 test1
 test2
+test integration 1
