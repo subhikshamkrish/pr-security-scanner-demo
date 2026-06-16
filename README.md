@@ -39,3 +39,4 @@ test1
 test2
 test integration 1
 test 2
+test 3
